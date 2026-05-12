@@ -2,6 +2,8 @@ package docs
 
 import (
 	"bufio"
+	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,8 +14,15 @@ type SearchResult struct {
 	Snippet string
 }
 
-// Search scans the provider's directory for the query string
-func (m *Manager) Search(provider, query string) ([]SearchResult, error) {
+var allowedExts = map[string]bool{".md": true, ".go": true, ".tf": true}
+
+const maxFileSize = int64(2 * 1024 * 1024) // 2MB limit
+
+func (m *Manager) Search(ctx context.Context, provider, query, version string) ([]SearchResult, error) {
+	if err := m.ensureVersion(ctx, provider, version); err != nil {
+		return nil, err
+	}
+
 	base, err := m.getProviderPath(provider)
 	if err != nil {
 		return nil, err
@@ -21,19 +30,25 @@ func (m *Manager) Search(provider, query string) ([]SearchResult, error) {
 
 	var results []SearchResult
 	err = filepath.Walk(base, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if err != nil || info.IsDir() {
 			return err
 		}
-		if !info.IsDir() && strings.HasSuffix(info.Name(), ".md") {
-			found, snippet := m.searchInFile(path, query)
-			if found {
-				// Make path relative to the provider root for the agent
-				relPath, _ := filepath.Rel(base, path)
-				results = append(results, SearchResult{
-					Path:    relPath,
-					Snippet: snippet,
-				})
-			}
+
+		ext := strings.ToLower(filepath.Ext(path))
+		if !allowedExts[ext] || info.Size() > maxFileSize {
+			return nil
+		}
+
+		found, snippet := m.searchInFile(ctx, path, query)
+		if found {
+			relPath, _ := filepath.Rel(base, path)
+			results = append(results, SearchResult{
+				Path:    relPath,
+				Snippet: snippet,
+			})
 		}
 		return nil
 	})
@@ -41,7 +56,7 @@ func (m *Manager) Search(provider, query string) ([]SearchResult, error) {
 	return results, err
 }
 
-func (m *Manager) searchInFile(path, query string) (bool, string) {
+func (m *Manager) searchInFile(ctx context.Context, path, query string) (bool, string) {
 	file, err := os.Open(path)
 	if err != nil {
 		return false, ""
@@ -49,10 +64,15 @@ func (m *Manager) searchInFile(path, query string) (bool, string) {
 	defer file.Close()
 
 	scanner := bufio.NewScanner(file)
+	lineNum := 0
 	for scanner.Scan() {
-		line := scanner.Text()
-		if strings.Contains(strings.ToLower(line), strings.ToLower(query)) {
-			return true, strings.TrimSpace(line)
+		if ctx.Err() != nil {
+			return false, ""
+		}
+		lineNum++
+		if strings.Contains(strings.ToLower(scanner.Text()), strings.ToLower(query)) {
+			snippet := fmt.Sprintf("Line %d:\n%s", lineNum, scanner.Text())
+			return true, snippet
 		}
 	}
 	return false, ""

@@ -11,26 +11,19 @@ import (
 )
 
 func main() {
-	// Configuration
 	repoURL := "https://github.com/hashicorp/web-unified-docs.git"
 	cacheDir := ".docs_cache"
 
-	// Initialize Docs Manager
-	dm := docs.NewManager(repoURL, cacheDir)
-	if err := dm.Sync(); err != nil {
-		log.Fatalf("Failed to sync documentation: %v", err)
-	}
+	// Initialize Docs Manager (versions will be resolved per-call)
+	dm := docs.NewManager(repoURL, cacheDir, nil)
 
-	// Initialize MCP Handler
 	handler := server.NewHandler(dm)
 
-	// Create MCP Server
 	s := mcp.NewServer(&mcp.Implementation{
 		Name:    "terraform-provider-docs",
 		Version: "1.0.0",
 	}, nil)
 
-	// Register Tools
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "list_docs",
 		Description: "List documentation files for a provider",
@@ -46,7 +39,6 @@ func main() {
 		Description: "Search for keywords in provider documentation",
 	}, handler.HandleSearchDocs)
 
-	// Run server over stdio
 	if err := s.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
 		log.Fatalf("Server failed: %v", err)
 	}
