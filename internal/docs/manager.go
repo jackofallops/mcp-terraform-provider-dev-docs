@@ -3,9 +3,11 @@ package docs
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -66,9 +68,72 @@ func (m *Manager) getProviderPath(provider string) (string, error) {
 	return filepath.Join(m.CacheDir, relPath), nil
 }
 
+// resolveLatestVersion queries the remote repository for tags, filters stable releases,
+// and returns the highest semantic version tag.
+func (m *Manager) resolveLatestVersion(ctx context.Context, provider string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "ls-remote", "--tags", "--refs", m.RepoURL)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch tags for %s: %w, output: %s", provider, err, string(out))
+	}
+
+	type version struct {
+		raw   string
+		major int
+		minor int
+		patch int
+	}
+	var versions []version
+
+	for _, line := range strings.Split(string(out), "\n") {
+		parts := strings.Split(line, "\t")
+		if len(parts) != 2 {
+			continue
+		}
+		ref := parts[1]
+		if !strings.HasPrefix(ref, "refs/tags/v") {
+			continue
+		}
+
+		tag := strings.TrimPrefix(ref, "refs/tags/")
+		// Strip pre-release suffixes (e.g., v1.0.0-beta -> 1.0.0) for stable comparison
+		baseTag := strings.Split(tag, "-")[0]
+		
+		var v version
+		fmt.Sscanf(baseTag, "%d.%d.%d", &v.major, &v.minor, &v.patch)
+		if v.major == 0 && v.minor == 0 && v.patch == 0 {
+			continue // Skip malformed tags
+		}
+		v.raw = tag
+		versions = append(versions, v)
+	}
+
+	if len(versions) == 0 {
+		return "", fmt.Errorf("no stable version tags found for %s", provider)
+	}
+
+	// Sort descending to place latest at index 0
+	sort.Slice(versions, func(i, j int) bool {
+		if versions[i].major != versions[j].major {
+			return versions[i].major > versions[j].major
+		}
+		if versions[i].minor != versions[j].minor {
+			return versions[i].minor > versions[j].minor
+		}
+		return versions[i].patch > versions[j].patch
+	})
+
+	return versions[0].raw, nil
+}
+
 func (m *Manager) ensureVersion(ctx context.Context, provider, version string) error {
 	if version == "" {
-		return nil // Use currently checked out state
+		resolved, err := m.resolveLatestVersion(ctx, provider)
+		if err != nil {
+			log.Printf("warning: could not resolve latest stable version for %s: %v. Using cached state.", provider, err)
+			return nil // Fallback to current cache if resolution fails
+		}
+		version = resolved
 	}
 
 	targetDir := filepath.Join(m.CacheDir, m.Providers[provider])

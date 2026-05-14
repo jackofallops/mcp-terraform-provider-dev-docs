@@ -65,7 +65,7 @@ Configure in your IDE's MCP client settings or ~/.antigravity/mcp.json:
 
 ### Usage Notes
 
- • The server caches cloned repositories in a configurable directory to avoid repeated network requests.
- • All operations are read-only and safe for AI agents.
- • If no version is specified, the server uses the currently checked-out state of the cached repository.
- • Ensure your IDE's MCP client supports standard input/output (stdio) transport.
+* The server caches cloned repositories in a configurable directory to avoid repeated network requests.  
+* All operations are read-only and safe for AI agents.  
+* If no version is specified, the server uses the currently checked-out state of the cached repository.  
+* Ensure your IDE's MCP client supports standard input/output (stdio) transport.  
