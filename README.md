@@ -54,7 +54,10 @@ The server maps descriptive key names and backward-compatible aliases to their r
 
 ## Architectural & Safety Features
 
-* **Single-Repository Cache**: Instead of duplicate cloning, the server clones `web-unified-docs` exactly once to `.docs_cache/web-unified-docs` on startup, minimizing bandwidth and disk usage.
+* **Single-Repository Cache**: Instead of duplicate cloning, the server clones `web-unified-docs` exactly once to the cache directory on startup.
+  * The cache location defaults to `.docs_cache`.
+  * You can customize the location using the `TERRAFORM_DOCS_CACHE_DIR` environment variable.
+  * If the server is running on a **Read-Only (RO) filesystem**, it automatically detects that the directory is not writeable and falls back to a safe subdirectory under the system's temporary directory (`os.TempDir()`), typically `/tmp/terraform-provider-docs-cache` or similar.
 * **RWMutex Thread Safety**: Uses a `sync.RWMutex` to ensure thread-safe operation. Multiple client queries can read or search in parallel, while background repository synchronization operations are safely isolated.
 * **Local Sandboxing**: Operates strictly read-only and over stdio transport. No TCP/UDP network ports are opened, ensuring complete isolation and protection from cross-origin exploits or port clashes.
 
