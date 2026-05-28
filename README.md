@@ -1,28 +1,81 @@
-# Terraform Docs MCP Server
+# Terraform Developer Docs MCP Server
 
-A lightweight Model Context Protocol (MCP) server that provides AI agents with read-only access to Terraform provider documentation. It securely clones and caches specific git repositories, enabling intelligent navigation, searching, and reading of markdown-based API references and guides.
+A high-performance Model Context Protocol (MCP) server that provides local AI agents with fast, secure, and thread-safe read-only access to HashiCorp's official Terraform provider developer documentation. 
 
-## Capabilities
+By cloning and caching the unified documentation repository (`web-unified-docs`), this server allows agents to list, read, and perform fast native searches across all documentation versions for building, testing, logging, and multiplexing Terraform providers.
 
-- **List**: Browse directory structures and file trees within a provider's documentation.
-- **Read**: Fetch the raw content of any `.md` file by path.
-- **Search**: Perform full-text searches across documentation, returning relevant snippets.
-- **Version Control**: Pin to specific git tags or branches (e.g., `v1.6.0`, `main`) for reproducible results.
+---
 
-Supported providers: `framework`, `sdk`, `core`.
+## Capabilities & Toolset
 
-## IDE Configuration Examples
+The server registers three primary JSON-RPC tools. Every tool dynamically validates providers and versions, and falls back to the **latest released version** (highest semantic version folder) if `version` is omitted.
 
-Configure your AI agent to use this server by adding the following JSON configuration to your IDE's MCP settings file. Replace `/path/to/terraform-docs-mcp` with the actual executable path on your system.
+### 1. `list_docs`
+Browse the directory structure and file trees of a developer library.
+* **Arguments**:
+  * `provider` (string, required): The target developer library key or alias.
+  * `path` (string, optional): The relative subpath to list (e.g. `docs` or `" "` for root).
+  * `version` (string, optional): Specific version subdirectory (e.g., `v1.18.x`, `v2.0.0`). If omitted, defaults to the latest stable release.
+* **Response**: A newline-separated list of files and subdirectories (directories are suffixed with `/` for clarity).
 
-### Claude Desktop
-Add to `~/.claude/claude_desktop_config.json`:
-Add to `~/.claude/claude_desktop_config.json`:
+### 2. `read_doc`
+Fetch the complete markdown or text contents of a specific documentation file.
+* **Arguments**:
+  * `provider` (string, required): The target developer library key or alias.
+  * `path` (string, required): Path to the documentation file relative to the version directory (e.g., `docs/index.md`).
+  * `version` (string, optional): Specific version subdirectory (e.g., `v1.18.x`, `v2.0.0`). If omitted, defaults to the latest stable release.
+* **Response**: The raw text content of the markdown/text file.
+
+### 3. `search_docs`
+Perform ultra-fast, case-insensitive literal string searches across all documentation files using native multi-threaded `git grep`.
+* **Arguments**:
+  * `provider` (string, required): The target developer library key or alias.
+  * `query` (string, required): The literal text snippet or keyword to search for.
+  * `version` (string, optional): Specific version subdirectory (e.g., `v1.18.x`, `v2.0.0`). If omitted, defaults to the latest stable release.
+* **Response**: A formatted list of matching files, including exact matching line numbers and source snippets, capped at 100 results to optimize LLM context usage.
+
+---
+
+## Supported Developer Libraries
+
+The server maps descriptive key names and backward-compatible aliases to their respective subdirectories within the unified documentation mono-repo:
+
+| Verbose Key (Preferred) | Alias (Backward Compatibility) | Target Path in Unified Docs | Description |
+| :--- | :--- | :--- | :--- |
+| `"plugin-framework"` | `"framework"` | `content/terraform-plugin-framework` | Modern Go Plugin Framework |
+| `"plugin-sdk-v2"` | `"sdk"`, `"sdkv2"` | `content/terraform-plugin-sdk` | Legacy SDKv2 |
+| `"terraform-core"` | `"core"` | `content/terraform` | Terraform Core / Integration Protocol |
+| `"plugin-testing"` | `"testing"` | `content/terraform-plugin-testing` | Provider Testing Framework |
+| `"plugin-go"` | *None* | `content/terraform-plugin-go` | Lower-level Go Plugin Bindings |
+| `"plugin-log"` | *None* | `content/terraform-plugin-log` | Framework Logging Utilities |
+| `"plugin-mux"` | *None* | `content/terraform-plugin-mux` | SDKv2 and Framework Multiplexer |
+
+---
+
+## Architectural & Safety Features
+
+* **Single-Repository Cache**: Instead of duplicate cloning, the server clones `web-unified-docs` exactly once to `.docs_cache/web-unified-docs` on startup, minimizing bandwidth and disk usage.
+* **RWMutex Thread Safety**: Uses a `sync.RWMutex` to ensure thread-safe operation. Multiple client queries can read or search in parallel, while background repository synchronization operations are safely isolated.
+* **Local Sandboxing**: Operates strictly read-only and over stdio transport. No TCP/UDP network ports are opened, ensuring complete isolation and protection from cross-origin exploits or port clashes.
+
+---
+
+## IDE Configuration
+
+To configure your local AI client to use this server, build the executable and add it to your client config.
+
+### Build Executable
+```bash
+go build -o terraform-docs-mcp cmd/server/main.go
+```
+
+### 1. Claude Desktop
+Add the following to your `~/.claude/claude_desktop_config.json`:
 ```json
 {
   "mcpServers": {
     "terraform_docs": {
-      "command": "/path/to/terraform-docs-mcp",
+      "command": "/path/to/terraform-provider-dev-docs/terraform-docs-mcp",
       "args": [],
       "env": {}
     }
@@ -30,15 +83,13 @@ Add to `~/.claude/claude_desktop_config.json`:
 }
 ```
 
-### Cursor
-
-Add to your project's .cursor/mcp.json (or global settings):
-
+### 2. Cursor
+Add to your global Cursor settings or `.cursor/mcp.json`:
 ```json
 {
   "mcpServers": {
     "terraform_docs": {
-      "command": "/path/to/terraform-docs-mcp",
+      "command": "/path/to/terraform-provider-dev-docs/terraform-docs-mcp",
       "args": [],
       "env": {}
     }
@@ -46,26 +97,16 @@ Add to your project's .cursor/mcp.json (or global settings):
 }
 ```
 
-### Antigravity
-
-Configure in your IDE's MCP client settings or ~/.antigravity/mcp.json:
-
+### 3. Antigravity
+Configure in your global `~/.antigravity/mcp.json` or workspace settings:
 ```json
 {
   "mcpServers": {
     "terraform_docs": {
-      "command": "/path/to/terraform-docs-mcp",
+      "command": "/path/to/terraform-provider-dev-docs/terraform-docs-mcp",
       "args": [],
       "env": {}
     }
   }
 }
 ```
-
-
-### Usage Notes
-
-* The server caches cloned repositories in a configurable directory to avoid repeated network requests.  
-* All operations are read-only and safe for AI agents.  
-* If no version is specified, the server uses the currently checked-out state of the cached repository.  
-* Ensure your IDE's MCP client supports standard input/output (stdio) transport.  
