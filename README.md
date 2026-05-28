@@ -63,14 +63,29 @@ The server maps descriptive key names and backward-compatible aliases to their r
 
 ---
 
+## Installation
+
+### Standard Go Install (Recommended)
+You can install the MCP server globally without needing to clone this repository manually. Run the following command:
+
+```bash
+go install github.com/jackofallops/mcp-terraform-provider-dev-docs/cmd/terraform-docs-mcp@latest
+```
+
+This compiles and installs the `terraform-docs-mcp` executable into your standard Go binary path (typically `~/go/bin/terraform-docs-mcp` on macOS/Linux, or `%USERPROFILE%\go\bin\terraform-docs-mcp.exe` on Windows).
+
+### Local Compilation
+If you have cloned the repository locally, you can build it using:
+
+```bash
+go build -o terraform-docs-mcp cmd/terraform-docs-mcp/main.go
+```
+
+---
+
 ## IDE Configuration
 
-To configure your local AI client to use this server, build the executable and add it to your client config.
-
-### Build Executable
-```bash
-go build -o terraform-docs-mcp cmd/server/main.go
-```
+Configure your AI client to use the server by adding it to your client config. Below are standard configuration examples utilizing the globally installed binary. (Replace `~/go/bin/` with the absolute path to your home directory, e.g. `/Users/yourusername/go/bin/terraform-docs-mcp`).
 
 ### 1. Claude Desktop
 Add the following to your `~/.claude/claude_desktop_config.json`:
@@ -78,7 +93,7 @@ Add the following to your `~/.claude/claude_desktop_config.json`:
 {
   "mcpServers": {
     "terraform_docs": {
-      "command": "/path/to/terraform-provider-dev-docs/terraform-docs-mcp",
+      "command": "/Users/YOUR_USERNAME/go/bin/terraform-docs-mcp",
       "args": [],
       "env": {}
     }
@@ -92,7 +107,7 @@ Add to your global Cursor settings or `.cursor/mcp.json`:
 {
   "mcpServers": {
     "terraform_docs": {
-      "command": "/path/to/terraform-provider-dev-docs/terraform-docs-mcp",
+      "command": "/Users/YOUR_USERNAME/go/bin/terraform-docs-mcp",
       "args": [],
       "env": {}
     }
@@ -106,7 +121,7 @@ Configure in your global `~/.antigravity/mcp.json` or workspace settings:
 {
   "mcpServers": {
     "terraform_docs": {
-      "command": "/path/to/terraform-provider-dev-docs/terraform-docs-mcp",
+      "command": "/Users/YOUR_USERNAME/go/bin/terraform-docs-mcp",
       "args": [],
       "env": {}
     }
