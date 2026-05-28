@@ -20,28 +20,31 @@ func NewHandler(dm *docs.Manager) *Handler {
 }
 
 type ListDocsArgs struct {
-	Provider string `json:"provider" jsonschema:"The provider (framework, sdk, core)"`
-	Path     string `json:"path"     jsonschema:"Subpath to list"`
-	Version  string `json:"version,omitempty" jsonschema:"Git tag or branch for this provider"`
+	Provider string `json:"provider" jsonschema:"The provider key, e.g. plugin-framework, plugin-sdk-v2, terraform-core, plugin-testing, plugin-go, plugin-log, plugin-mux (or legacy short aliases: framework, sdk, core, testing)"`
+	Path     string `json:"path"     jsonschema:"Subpath to list (use empty string for root)"`
+	Version  string `json:"version,omitempty" jsonschema:"Specific version folder (e.g. v1.18.x, v2.0.0). If omitted, the latest released version is used."`
 }
 
 type ReadDocArgs struct {
-	Provider string `json:"provider" jsonschema:"The provider (framework, sdk, core)"`
-	Path     string `json:"path"     jsonschema:"Path to the .md file"`
-	Version  string `json:"version,omitempty" jsonschema:"Git tag or branch for this provider"`
+	Provider string `json:"provider" jsonschema:"The provider key, e.g. plugin-framework, plugin-sdk-v2, terraform-core, plugin-testing, plugin-go, plugin-log, plugin-mux (or legacy short aliases: framework, sdk, core, testing)"`
+	Path     string `json:"path"     jsonschema:"Path to the documentation file relative to the version directory (e.g., docs/index.md)"`
+	Version  string `json:"version,omitempty" jsonschema:"Specific version folder (e.g. v1.18.x, v2.0.0). If omitted, the latest released version is used."`
 }
 
 type SearchDocsArgs struct {
-	Provider string `json:"provider" jsonschema:"The provider (framework, sdk, core)"`
-	Query    string `json:"query"              jsonschema:"Search keyword"`
-	Version  string `json:"version,omitempty" jsonschema:"Git tag or branch for this provider"`
+	Provider string `json:"provider" jsonschema:"The provider key, e.g. plugin-framework, plugin-sdk-v2, terraform-core, plugin-testing, plugin-go, plugin-log, plugin-mux (or legacy short aliases: framework, sdk, core, testing)"`
+	Query    string `json:"query"              jsonschema:"Search keyword or literal text to search for"`
+	Version  string `json:"version,omitempty" jsonschema:"Specific version folder (e.g. v1.18.x, v2.0.0). If omitted, the latest released version is used."`
 }
 
 func (h *Handler) HandleListDocs(ctx context.Context, req *mcp.CallToolRequest, args ListDocsArgs) (*mcp.CallToolResult, any, error) {
 	provider := args.Provider
 	if provider == "" {
-		provider = "framework"
+		provider = "plugin-framework"
 	}
+
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 
 	files, err := h.Docs.List(ctx, provider, args.Path, args.Version)
 	if err != nil {
@@ -55,11 +58,6 @@ func (h *Handler) HandleListDocs(ctx context.Context, req *mcp.CallToolRequest, 
 }
 
 func (h *Handler) HandleReadDoc(ctx context.Context, req *mcp.CallToolRequest, args ReadDocArgs) (*mcp.CallToolResult, any, error) {
-	allowed := map[string]bool{"framework": true, "sdk": true, "core": true}
-	if !allowed[args.Provider] {
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("unsupported provider: %s", args.Provider)}}, IsError: true}, nil, nil
-	}
-
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
@@ -78,11 +76,6 @@ func (h *Handler) HandleReadDoc(ctx context.Context, req *mcp.CallToolRequest, a
 }
 
 func (h *Handler) HandleSearchDocs(ctx context.Context, req *mcp.CallToolRequest, args SearchDocsArgs) (*mcp.CallToolResult, any, error) {
-	allowed := map[string]bool{"framework": true, "sdk": true, "core": true}
-	if !allowed[args.Provider] {
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("unsupported provider: %s", args.Provider)}}, IsError: true}, nil, nil
-	}
-
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 

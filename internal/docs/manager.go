@@ -9,110 +9,167 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 )
 
 type Manager struct {
+	mu        sync.RWMutex
 	RepoURL   string
 	CacheDir  string
-	Providers map[string]string // framework, sdk, core -> relative paths
-	Versions  map[string]string // provider -> git tag/branch (e.g., "v1.6.0", "main")
+	Providers map[string]string // Maps preferred verbose keys to relative paths in the repo
+	Aliases   map[string]string // Maps short/alternative keys to preferred keys
 }
 
 func NewManager(repoURL, cacheDir string, versions map[string]string) *Manager {
 	return &Manager{
-		RepoURL:   repoURL,
-		CacheDir:  cacheDir,
+		RepoURL:  repoURL,
+		CacheDir: cacheDir,
 		Providers: map[string]string{
-			"framework": "content/terraform-plugin-framework",
-			"sdk":       "content/terraform-plugin-sdk",
-			"core":      "content/terraform",
+			"plugin-framework": "content/terraform-plugin-framework",
+			"plugin-sdk-v2":    "content/terraform-plugin-sdk",
+			"terraform-core":   "content/terraform",
+			"plugin-testing":   "content/terraform-plugin-testing",
+			"plugin-go":        "content/terraform-plugin-go",
+			"plugin-log":       "content/terraform-plugin-log",
+			"plugin-mux":       "content/terraform-plugin-mux",
 		},
-		Versions: versions,
+		Aliases: map[string]string{
+			"framework": "plugin-framework",
+			"sdk":       "plugin-sdk-v2",
+			"sdkv2":     "plugin-sdk-v2",
+			"core":      "terraform-core",
+			"testing":   "plugin-testing",
+		},
 	}
 }
 
+// Sync clones the unified documentation mono-repository if missing,
+// or updates it to the latest main branch.
 func (m *Manager) Sync(ctx context.Context) error {
-	if _, err := os.Stat(m.CacheDir); os.IsNotExist(err) {
-		fmt.Println("Cloning documentation repository...")
-		for provider, tag := range m.Versions {
-			targetDir := filepath.Join(m.CacheDir, m.Providers[provider])
-			cmd := exec.CommandContext(ctx, "git", "clone", "--depth", "1", "--single-branch", "--branch", tag, m.RepoURL, targetDir)
-			if output, err := cmd.CombinedOutput(); err != nil {
-				return fmt.Errorf("git clone failed for %s: %v, output: %s", provider, err, string(output))
-			}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	repoDir := filepath.Join(m.CacheDir, "web-unified-docs")
+	if _, err := os.Stat(repoDir); os.IsNotExist(err) {
+		if err := os.MkdirAll(m.CacheDir, 0755); err != nil {
+			return fmt.Errorf("failed to create cache directory: %w", err)
+		}
+		log.Printf("Cloning unified documentation repository to %s...", repoDir)
+		cmd := exec.CommandContext(ctx, "git", "clone", "--depth", "1", m.RepoURL, repoDir)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("git clone failed: %v, output: %s", err, string(output))
 		}
 	} else {
-		fmt.Println("Updating documentation repository...")
-		for provider, tag := range m.Versions {
-			targetDir := filepath.Join(m.CacheDir, m.Providers[provider])
-			
-			fetchCmd := exec.CommandContext(ctx, "git", "-C", targetDir, "fetch", "origin", tag)
-			if output, err := fetchCmd.CombinedOutput(); err != nil {
-				return fmt.Errorf("git fetch failed for %s: %v, output: %s", provider, err, string(output))
+		log.Printf("Updating unified documentation repository in %s...", repoDir)
+		cmd := exec.CommandContext(ctx, "git", "-C", repoDir, "pull", "origin", "main")
+		if output, err := cmd.CombinedOutput(); err != nil {
+			log.Printf("git pull failed: %v, output: %s. attempting hard reset to origin/main...", err, string(output))
+			fetchCmd := exec.CommandContext(ctx, "git", "-C", repoDir, "fetch", "origin", "main")
+			if fOut, fErr := fetchCmd.CombinedOutput(); fErr != nil {
+				return fmt.Errorf("git fetch failed: %v, output: %s", fErr, string(fOut))
 			}
-			
-			checkoutCmd := exec.CommandContext(ctx, "git", "-C", targetDir, "checkout", tag)
-			if output, err := checkoutCmd.CombinedOutput(); err != nil {
-				return fmt.Errorf("git checkout failed for %s: %v, output: %s", provider, err, string(output))
+			resetCmd := exec.CommandContext(ctx, "git", "-C", repoDir, "reset", "--hard", "origin/main")
+			if rOut, rErr := resetCmd.CombinedOutput(); rErr != nil {
+				return fmt.Errorf("git reset failed: %v, output: %s", rErr, string(rOut))
 			}
 		}
 	}
 	return nil
 }
 
-func (m *Manager) getProviderPath(provider string) (string, error) {
-	relPath, ok := m.Providers[provider]
-	if !ok {
-		return "", fmt.Errorf("unsupported provider: %s", provider)
-	}
-	return filepath.Join(m.CacheDir, relPath), nil
+type semver struct {
+	raw        string
+	major      int
+	minor      int
+	patch      int
+	isWildcard bool
 }
 
-// resolveLatestVersion queries the remote repository for tags, filters stable releases,
-// and returns the highest semantic version tag.
-func (m *Manager) resolveLatestVersion(ctx context.Context, provider string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", "ls-remote", "--tags", "--refs", m.RepoURL)
-	out, err := cmd.CombinedOutput()
+func parseSemver(s string) (semver, bool) {
+	s = strings.TrimPrefix(s, "v")
+	parts := strings.Split(s, ".")
+	if len(parts) < 2 {
+		return semver{}, false
+	}
+
+	var v semver
+	v.raw = "v" + s
+
+	if _, err := fmt.Sscanf(parts[0], "%d", &v.major); err != nil {
+		return semver{}, false
+	}
+	if _, err := fmt.Sscanf(parts[1], "%d", &v.minor); err != nil {
+		return semver{}, false
+	}
+
+	if len(parts) >= 3 {
+		if parts[2] == "x" || parts[2] == "X" || parts[2] == "*" {
+			v.patch = 999999
+			v.isWildcard = true
+		} else {
+			if _, err := fmt.Sscanf(parts[2], "%d", &v.patch); err != nil {
+				v.patch = 0
+			}
+		}
+	} else {
+		v.patch = 999999
+		v.isWildcard = true
+	}
+
+	return v, true
+}
+
+func (m *Manager) resolveProvider(provider string) (string, string, error) {
+	if verbose, exists := m.Aliases[provider]; exists {
+		provider = verbose
+	}
+	relPath, exists := m.Providers[provider]
+	if !exists {
+		return "", "", fmt.Errorf("unsupported provider: %s", provider)
+	}
+	return provider, relPath, nil
+}
+
+// getVersionDir resolves the absolute path to the directory for a provider version.
+// If requestedVersion is empty, it returns the latest semantic version directory.
+func (m *Manager) getVersionDir(ctx context.Context, provider, requestedVersion string) (string, error) {
+	verboseProvider, relPath, err := m.resolveProvider(provider)
 	if err != nil {
-		return "", fmt.Errorf("failed to fetch tags for %s: %w, output: %s", provider, err, string(out))
+		return "", err
 	}
 
-	type version struct {
-		raw   string
-		major int
-		minor int
-		patch int
+	repoDir := filepath.Join(m.CacheDir, "web-unified-docs")
+	providerDir := filepath.Join(repoDir, relPath)
+
+	if _, err := os.Stat(repoDir); os.IsNotExist(err) {
+		if err := m.Sync(ctx); err != nil {
+			return "", fmt.Errorf("repository not initialized: %w", err)
+		}
 	}
-	var versions []version
 
-	for _, line := range strings.Split(string(out), "\n") {
-		parts := strings.Split(line, "\t")
-		if len(parts) != 2 {
+	entries, err := os.ReadDir(providerDir)
+	if err != nil {
+		return "", fmt.Errorf("failed to read provider directory: %w", err)
+	}
+
+	var versions []semver
+	for _, entry := range entries {
+		if !entry.IsDir() {
 			continue
 		}
-		ref := parts[1]
-		if !strings.HasPrefix(ref, "refs/tags/v") {
+		name := entry.Name()
+		if !strings.HasPrefix(name, "v") {
 			continue
 		}
-
-		tag := strings.TrimPrefix(ref, "refs/tags/")
-		// Strip pre-release suffixes (e.g., v1.0.0-beta -> 1.0.0) for stable comparison
-		baseTag := strings.Split(tag, "-")[0]
-		
-		var v version
-		fmt.Sscanf(baseTag, "%d.%d.%d", &v.major, &v.minor, &v.patch)
-		if v.major == 0 && v.minor == 0 && v.patch == 0 {
-			continue // Skip malformed tags
+		if v, ok := parseSemver(name); ok {
+			versions = append(versions, v)
 		}
-		v.raw = tag
-		versions = append(versions, v)
 	}
 
 	if len(versions) == 0 {
-		return "", fmt.Errorf("no stable version tags found for %s", provider)
+		return "", fmt.Errorf("no version directories found for provider %s", verboseProvider)
 	}
 
-	// Sort descending to place latest at index 0
 	sort.Slice(versions, func(i, j int) bool {
 		if versions[i].major != versions[j].major {
 			return versions[i].major > versions[j].major
@@ -123,56 +180,39 @@ func (m *Manager) resolveLatestVersion(ctx context.Context, provider string) (st
 		return versions[i].patch > versions[j].patch
 	})
 
-	return versions[0].raw, nil
-}
+	if requestedVersion == "" {
+		return filepath.Join(providerDir, versions[0].raw), nil
+	}
 
-func (m *Manager) ensureVersion(ctx context.Context, provider, version string) error {
-	if version == "" {
-		resolved, err := m.resolveLatestVersion(ctx, provider)
-		if err != nil {
-			log.Printf("warning: could not resolve latest stable version for %s: %v. Using cached state.", provider, err)
-			return nil // Fallback to current cache if resolution fails
+	normRequested := requestedVersion
+	if !strings.HasPrefix(normRequested, "v") {
+		normRequested = "v" + normRequested
+	}
+
+	for _, v := range versions {
+		if v.raw == normRequested {
+			return filepath.Join(providerDir, v.raw), nil
 		}
-		version = resolved
 	}
 
-	targetDir := filepath.Join(m.CacheDir, m.Providers[provider])
-	if _, err := os.Stat(targetDir); os.IsNotExist(err) {
-		cmd := exec.CommandContext(ctx, "git", "clone", "--depth", "1", "--single-branch", "--branch", version, m.RepoURL, targetDir)
-		if output, err := cmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("git clone failed for %s: %v, output: %s", provider, err, string(output))
+	reqV, ok := parseSemver(normRequested)
+	if ok {
+		for _, v := range versions {
+			if v.major == reqV.major && v.minor == reqV.minor {
+				return filepath.Join(providerDir, v.raw), nil
+			}
 		}
-		return nil
 	}
 
-	out, err := exec.CommandContext(ctx, "git", "-C", targetDir, "rev-parse", "--abbrev-ref", "HEAD").CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("failed to get current ref for %s: %v", provider, err)
-	}
-	currentRef := strings.TrimSpace(string(out))
-
-	if currentRef == version || (strings.HasPrefix(version, "refs/tags/") && currentRef == version) {
-		return nil
-	}
-
-	fetchCmd := exec.CommandContext(ctx, "git", "-C", targetDir, "fetch", "origin", version)
-	if output, err := fetchCmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("git fetch failed for %s: %v, output: %s", provider, err, string(output))
-	}
-
-	checkoutCmd := exec.CommandContext(ctx, "git", "-C", targetDir, "checkout", version)
-	if output, err := checkoutCmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("git checkout failed for %s: %v, output: %s", provider, err, string(output))
-	}
-	return nil
+	log.Printf("warning: version %s not found for provider %s, falling back to latest %s", requestedVersion, verboseProvider, versions[0].raw)
+	return filepath.Join(providerDir, versions[0].raw), nil
 }
 
 func (m *Manager) List(ctx context.Context, provider, subPath, version string) ([]string, error) {
-	if err := m.ensureVersion(ctx, provider, version); err != nil {
-		return nil, err
-	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 
-	base, err := m.getProviderPath(provider)
+	base, err := m.getVersionDir(ctx, provider, version)
 	if err != nil {
 		return nil, err
 	}
@@ -190,17 +230,20 @@ func (m *Manager) List(ctx context.Context, provider, subPath, version string) (
 
 	var result []string
 	for _, entry := range entries {
-		result = append(result, entry.Name())
+		if entry.IsDir() {
+			result = append(result, entry.Name()+"/")
+		} else {
+			result = append(result, entry.Name())
+		}
 	}
 	return result, nil
 }
 
 func (m *Manager) Read(ctx context.Context, provider, path, version string) (string, error) {
-	if err := m.ensureVersion(ctx, provider, version); err != nil {
-		return "", err
-	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 
-	base, err := m.getProviderPath(provider)
+	base, err := m.getVersionDir(ctx, provider, version)
 	if err != nil {
 		return "", err
 	}

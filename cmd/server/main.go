@@ -17,6 +17,12 @@ func main() {
 	// Initialize Docs Manager (versions will be resolved per-call)
 	dm := docs.NewManager(repoURL, cacheDir, nil)
 
+	// Perform startup sync to clone/update the repository
+	log.Println("Initializing documentation cache on startup...")
+	if err := dm.Sync(context.Background()); err != nil {
+		log.Fatalf("Failed to initialize documentation cache: %v", err)
+	}
+
 	handler := server.NewHandler(dm)
 
 	s := mcp.NewServer(&mcp.Implementation{
@@ -39,6 +45,7 @@ func main() {
 		Description: "Search for keywords in provider documentation",
 	}, handler.HandleSearchDocs)
 
+	log.Println("Starting MCP server...")
 	if err := s.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
 		log.Fatalf("Server failed: %v", err)
 	}

@@ -1,10 +1,9 @@
 package docs
 
 import (
-	"bufio"
 	"context"
 	"fmt"
-	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -14,66 +13,64 @@ type SearchResult struct {
 	Snippet string
 }
 
-var allowedExts = map[string]bool{".md": true, ".go": true, ".tf": true}
-
-const maxFileSize = int64(2 * 1024 * 1024) // 2MB limit
-
 func (m *Manager) Search(ctx context.Context, provider, query, version string) ([]SearchResult, error) {
-	if err := m.ensureVersion(ctx, provider, version); err != nil {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	repoDir := filepath.Join(m.CacheDir, "web-unified-docs")
+	base, err := m.getVersionDir(ctx, provider, version)
+	if err != nil {
 		return nil, err
 	}
 
-	base, err := m.getProviderPath(provider)
+	relPath, err := filepath.Rel(repoDir, base)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to compute relative search path: %w", err)
+	}
+
+	cmd := exec.CommandContext(ctx, "git", "-C", repoDir, "grep", "-n", "-i", "-F", "--no-color", "-e", query, "--", relPath)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		// git grep exits with status 1 if no matches are found
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("git grep failed: %v, output: %s", err, string(out))
 	}
 
 	var results []SearchResult
-	err = filepath.Walk(base, func(path string, info os.FileInfo, err error) error {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		if err != nil || info.IsDir() {
-			return err
-		}
-
-		ext := strings.ToLower(filepath.Ext(path))
-		if !allowedExts[ext] || info.Size() > maxFileSize {
-			return nil
+	lines := strings.Split(string(out), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
 		}
 
-		found, snippet := m.searchInFile(ctx, path, query)
-		if found {
-			relPath, _ := filepath.Rel(base, path)
-			results = append(results, SearchResult{
-				Path:    relPath,
-				Snippet: snippet,
-			})
+		parts := strings.SplitN(line, ":", 3)
+		if len(parts) < 3 {
+			continue
 		}
-		return nil
-	})
 
-	return results, err
-}
+		filePath := parts[0]
+		lineNumStr := parts[1]
+		content := parts[2]
 
-func (m *Manager) searchInFile(ctx context.Context, path, query string) (bool, string) {
-	file, err := os.Open(path)
-	if err != nil {
-		return false, ""
-	}
-	defer file.Close()
-
-	scanner := bufio.NewScanner(file)
-	lineNum := 0
-	for scanner.Scan() {
-		if ctx.Err() != nil {
-			return false, ""
+		relFilePath, err := filepath.Rel(relPath, filePath)
+		if err != nil {
+			relFilePath = filePath
 		}
-		lineNum++
-		if strings.Contains(strings.ToLower(scanner.Text()), strings.ToLower(query)) {
-			snippet := fmt.Sprintf("Line %d:\n%s", lineNum, scanner.Text())
-			return true, snippet
+
+		snippet := fmt.Sprintf("Line %s:\n%s", lineNumStr, content)
+		results = append(results, SearchResult{
+			Path:    relFilePath,
+			Snippet: snippet,
+		})
+
+		// Cap search results to 100 to avoid overwhelming LLM contexts
+		if len(results) >= 100 {
+			break
 		}
 	}
-	return false, ""
+
+	return results, nil
 }
